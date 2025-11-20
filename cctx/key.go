@@ -1,5 +1,5 @@
 package cctx
 
 var (
-	TraceKey = "traceKey"
+	SpanKey = "spanKey"
 )

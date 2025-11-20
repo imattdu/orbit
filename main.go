@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/imattdu/orbit/errorx"
+	"github.com/imattdu/orbit/logx"
+	"log/slog"
+	"time"
 )
 
 func Marshal(v interface{}) string {
@@ -25,9 +28,26 @@ func main() {
 	//ctx, s = tracex.StartSpan(ctx, "m2")
 	//fmt.Println(Marshal(s))
 
-	err := errorx.NewBiz(errorx.ErrNotFound,
-		errorx.WithSuccess(true),
-		errorx.WithService(errorx.ServiceBaidu))
-	fmt.Println(errorx.ServiceOf(err))
-	fmt.Println(errorx.IsSuccess(err))
+	//err := errorx.NewBiz(errorx.ErrNotFound,
+	//	errorx.WithSuccess(true),
+	//	errorx.WithService(errorx.ServiceBaidu))
+	//fmt.Println(errorx.ServiceOf(err))
+	//fmt.Println(errorx.IsSuccess(err))
+	err := logx.Init(logx.Config{
+		AppName:        "matt",
+		Level:          slog.LevelInfo,
+		LogDir:         "./logs",
+		Rotate:         logx.RotateHourly,
+		MaxBackups:     10,
+		QueueSize:      1024,
+		ConsoleEnabled: true,
+	})
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+	logx.Warn(context.Background(), "abc", map[string]interface{}{
+		"a1": "def",
+		"b1": "def",
+	})
+	time.Sleep(1 * time.Second)
 }
