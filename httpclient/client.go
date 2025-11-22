@@ -2,6 +2,8 @@ package httpclient
 
 import (
 	"context"
+	"github.com/imattdu/orbit/logx"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -14,6 +16,7 @@ type AfterFunc func(ctx context.Context, req *http.Request, resp *http.Response,
 
 // Config 是 Client 的初始化配置
 type Config struct {
+	logger  logx.Logger
 	BaseURL string
 
 	// 请求级默认超时（per-request 没设 Timeout 时使用）
@@ -100,6 +103,7 @@ func WithStatsHook(h StatsHook) Option {
 
 // Client 是并发安全的 HTTP 客户端
 type Client struct {
+	logger  logx.Logger
 	hc      *http.Client
 	baseURL *url.URL
 
@@ -119,6 +123,20 @@ func New(opts ...Option) (*Client, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	logger := cfg.logger
+	if logger == nil {
+		l, err := logx.New(logx.Config{
+			AppName:    "http",
+			Level:      slog.LevelInfo,
+			LogDir:     "logs",
+			MaxBackups: 10,
+			QueueSize:  10000,
+		})
+		if err != nil {
+			return nil, err
+		}
+		logger = l
 	}
 
 	var base *url.URL
@@ -146,6 +164,7 @@ func New(opts ...Option) (*Client, error) {
 	}
 
 	return &Client{
+		logger:  logger,
 		hc:      &http.Client{Transport: tr},
 		baseURL: base,
 

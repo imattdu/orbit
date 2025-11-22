@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/imattdu/orbit/cctx"
 	"github.com/imattdu/orbit/errorx"
 	"github.com/imattdu/orbit/tracex"
 )
@@ -57,13 +56,6 @@ func encodeLog(ctx context.Context, tag string, msg any, kv ...any) []slog.Attr 
 		attrs = append(attrs, slog.Any("msg", v))
 	}
 
-	// cctx 中的通用字段（比如 biz_tag / env / caller_sys 等）
-	if bag := cctx.All(ctx); len(bag) > 0 {
-		for k, v := range bag {
-			attrs = append(attrs, slog.Any(k, v))
-		}
-	}
-
 	// 额外 kv（必须是偶数个）
 	for i := 0; i+1 < len(kv); i += 2 {
 		k, ok := kv[i].(string)
@@ -72,6 +64,5 @@ func encodeLog(ctx context.Context, tag string, msg any, kv ...any) []slog.Attr 
 		}
 		attrs = append(attrs, slog.Any(k, kv[i+1]))
 	}
-
 	return attrs
 }

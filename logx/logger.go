@@ -56,16 +56,19 @@ var defaultLogger Logger
 
 // Init 根据 Config 初始化全局 logger（建议在 main 里调用一次）
 func Init(cfg Config) error {
-	h, err := newHandler(cfg)
-	if err != nil {
-		return err
+	l, err := New(cfg)
+	if err == nil {
+		defaultLogger = l
 	}
-	defaultLogger = &loggerImpl{slog: slog.New(h)}
-	return nil
+	return err
 }
 
 // New 创建一个独立的 Logger 实例
 func New(cfg Config) (Logger, error) {
+	if cfg.Rotate == nil {
+		r := RotateSize
+		cfg.Rotate = &r
+	}
 	h, err := newHandler(cfg)
 	if err != nil {
 		return nil, err
@@ -76,30 +79,4 @@ func New(cfg Config) (Logger, error) {
 // L 返回全局 logger，未 Init 时为 nil
 func L() Logger {
 	return defaultLogger
-}
-
-// 方便业务直接调用的快捷函数
-
-func Debug(ctx context.Context, tag string, msg any, kv ...any) {
-	if L() != nil {
-		L().Debug(ctx, tag, msg, kv...)
-	}
-}
-
-func Info(ctx context.Context, tag string, msg any, kv ...any) {
-	if L() != nil {
-		L().Info(ctx, tag, msg, kv...)
-	}
-}
-
-func Warn(ctx context.Context, tag string, msg any, kv ...any) {
-	if L() != nil {
-		L().Warn(ctx, tag, msg, kv...)
-	}
-}
-
-func Error(ctx context.Context, tag string, msg any, kv ...any) {
-	if L() != nil {
-		L().Error(ctx, tag, msg, kv...)
-	}
 }

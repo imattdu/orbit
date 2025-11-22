@@ -17,9 +17,14 @@ import (
 type handler struct {
 	cfg Config
 
-	mu    sync.Mutex
-	file  *os.File
-	size  int64
+	mu sync.Mutex
+
+	infoFile *os.File
+	warnFile *os.File
+
+	infoSize int64
+	warnSize int64
+
 	curHr time.Time // RotateHourly 使用：当前小时
 
 	entries chan slog.Record
@@ -41,11 +46,15 @@ func newHandler(cfg Config) (slog.Handler, error) {
 		entries: make(chan slog.Record, cfg.QueueSize),
 	}
 
-	// 先打开一个文件（根据当前时间）
 	now := time.Now()
-	if err := h.rotateIfNeeded(now); err != nil {
+
+	// 先打开 info/warn 两个文件
+	h.mu.Lock()
+	if err := h.rotateIfNeededLocked(now); err != nil {
+		h.mu.Unlock()
 		return nil, err
 	}
+	h.mu.Unlock()
 
 	go h.writeLoop()
 	return h, nil
@@ -69,6 +78,7 @@ func (h *handler) Handle(_ context.Context, r slog.Record) error {
 
 func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	// 简化：忽略 WithAttrs，所有 Attr 都由上层 encodeLog 提供
+	_ = attrs
 	return h
 }
 
@@ -87,22 +97,16 @@ func (h *handler) writeLoop() {
 	}
 }
 
-// writeRecord 把 Record 编码成 JSON 一行，写入文件 + 控制台
+// writeRecord 把 Record 编码成 JSON 一行，写入 info/warn 文件 + 控制台
 func (h *handler) writeRecord(r slog.Record) error {
-	now := time.Now()
-	if err := h.rotateIfNeeded(now); err != nil {
-		return err
-	}
-
-	// 构造 JSON 行
+	// 先构造 JSON 行，减少持锁时间
 	data := make(map[string]any, 16)
 	data["ts"] = r.Time.Format(time.RFC3339Nano)
 	data["level"] = r.Level.String()
 
 	r.Attrs(func(a slog.Attr) bool {
-		// 兼容所有 Go 版本，不使用 Resolve()
-		av := a.Value
-		data[a.Key] = av.Any()
+		v := a.Value
+		data[a.Key] = v.Any()
 		return true
 	})
 
@@ -112,16 +116,32 @@ func (h *handler) writeRecord(r slog.Record) error {
 	}
 	line := string(lineBytes) + "\n"
 
-	// 写文件
+	now := time.Now()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.file != nil {
-		n, err := h.file.WriteString(line)
+	if err := h.rotateIfNeededLocked(now); err != nil {
+		return err
+	}
+
+	// 选择 info / warn 文件
+	var f *os.File
+	if r.Level >= slog.LevelWarn {
+		f = h.warnFile
+	} else {
+		f = h.infoFile
+	}
+	if f != nil {
+		n, err := f.WriteString(line)
 		if err != nil {
 			return err
 		}
-		h.size += int64(n)
+		if r.Level >= slog.LevelWarn {
+			h.warnSize += int64(n)
+		} else {
+			h.infoSize += int64(n)
+		}
 	}
 
 	// 控制台输出
@@ -136,93 +156,132 @@ func (h *handler) writeRecord(r slog.Record) error {
 	return nil
 }
 
-// rotateIfNeeded 根据配置判断是否需要切分文件
-func (h *handler) rotateIfNeeded(now time.Time) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
+// rotateIfNeededLocked 在已上锁的情况下，根据配置判断是否需要切分 info/warn 文件
+func (h *handler) rotateIfNeededLocked(now time.Time) error {
 	needNew := false
-
-	switch h.cfg.Rotate {
+	needWarnNew := false
+	switch *h.cfg.Rotate {
 	case RotateHourly:
+		// 按小时切
 		hour := now.Truncate(time.Hour)
-		if h.file == nil || h.curHr.IsZero() || !hour.Equal(h.curHr) {
+		if h.curHr.IsZero() || !hour.Equal(h.curHr) {
 			needNew = true
+			needWarnNew = true
 			h.curHr = hour
-			h.size = 0
+			h.infoSize = 0
+			h.warnSize = 0
+		}
+		if h.infoFile == nil {
+			needNew = true
+		}
+		if h.warnFile == nil {
+			needWarnNew = true
 		}
 	case RotateSize:
-		if h.file == nil {
+		if h.infoFile == nil {
 			needNew = true
-		} else if h.cfg.MaxFileSizeMB > 0 {
-			limit := int64(h.cfg.MaxFileSizeMB) * 1024 * 1024
-			if h.size >= limit {
-				needNew = true
-				h.size = 0
-			}
 		}
-	default:
-		// 默认按小时
-		hour := now.Truncate(time.Hour)
-		if h.file == nil || h.curHr.IsZero() || !hour.Equal(h.curHr) {
-			needNew = true
-			h.curHr = hour
-			h.size = 0
+		if h.warnFile == nil {
+			needWarnNew = true
+		}
+		if h.cfg.MaxFileSizeMB > 0 {
+			limit := int64(h.cfg.MaxFileSizeMB) * 1024 * 1024
+			if h.infoSize >= limit {
+				needNew = true
+				h.infoSize = 0
+			}
+			if h.warnSize >= limit {
+				needWarnNew = true
+				h.warnSize = 0
+			}
 		}
 	}
 
-	if !needNew {
+	if !needNew && !needWarnNew {
 		return nil
 	}
 
-	if h.file != nil {
-		_ = h.file.Close()
+	// 关闭旧文件
+	if needNew && h.infoFile != nil {
+		_ = h.infoFile.Close()
+		h.infoFile = nil
+	}
+	if needWarnNew && h.warnFile != nil {
+		_ = h.warnFile.Close()
+		h.warnFile = nil
 	}
 
-	filename := h.buildFilename(now)
 	if err := os.MkdirAll(h.cfg.LogDir, 0o755); err != nil {
 		return err
 	}
-
-	f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
+	// 打开新的 info / warn 文件
+	if needNew {
+		infoName := h.buildFilename(now, false)
+		infoFile, err := os.OpenFile(infoName, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		h.infoFile = infoFile
+		infoLink := filepath.Join(h.cfg.LogDir, h.cfg.AppName+".log")
+		_ = os.Remove(infoLink)
+		_ = os.Symlink(filepath.Base(infoName), infoLink)
 	}
-	h.file = f
 
-	// 更新软链：{AppName}.log -> 当前文件
-	linkPath := filepath.Join(h.cfg.LogDir, h.cfg.AppName+".log")
-	_ = os.Remove(linkPath)
-	_ = os.Symlink(filepath.Base(filename), linkPath)
+	if needWarnNew {
+		warnName := h.buildFilename(now, true)
+		warnFile, err := os.OpenFile(warnName, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		h.warnFile = warnFile
+		warnLink := filepath.Join(h.cfg.LogDir, h.cfg.AppName+".wf.log")
+
+		_ = os.Remove(warnLink)
+		_ = os.Symlink(filepath.Base(warnName), warnLink)
+	}
 
 	// 清理旧文件
 	if h.cfg.MaxBackups > 0 {
-		h.cleanupOldFiles()
+		h.cleanupOldFiles(h.infoPrefix())
+		h.cleanupOldFiles(h.warnPrefix())
 	}
-
 	return nil
 }
 
-// buildFilename 构造日志文件名
-func (h *handler) buildFilename(now time.Time) string {
+// buildFilename 构造 info / warn 日志文件名
+func (h *handler) buildFilename(now time.Time, warn bool) string {
 	var ts string
-	if h.cfg.Rotate == RotateSize {
+	if *h.cfg.Rotate == RotateSize {
+		// 按大小切时，也带上日期，方便排查
 		ts = now.Format("20060102150405") // 到秒
 	} else {
 		ts = now.Format("2006010215") // 到小时
 	}
-	return filepath.Join(h.cfg.LogDir, fmt.Sprintf("%s-%s.log", h.cfg.AppName, ts))
+
+	name := h.cfg.AppName
+	if warn {
+		// warn 文件加 .wf 前缀，和常见 app.wf.log 习惯一致
+		return filepath.Join(h.cfg.LogDir, fmt.Sprintf("%s.wf-%s.log", name, ts))
+	}
+	return filepath.Join(h.cfg.LogDir, fmt.Sprintf("%s-%s.log", name, ts))
 }
 
-// cleanupOldFiles 按修改时间排序，只保留最新 MaxBackups 个
-func (h *handler) cleanupOldFiles() {
+func (h *handler) infoPrefix() string {
+	return h.cfg.AppName + "-"
+}
+
+func (h *handler) warnPrefix() string {
+	return h.cfg.AppName + ".wf-"
+}
+
+// cleanupOldFiles 只清理指定前缀的日志文件（info 或 warn）
+func (h *handler) cleanupOldFiles(prefix string) {
 	entries, err := os.ReadDir(h.cfg.LogDir)
 	if err != nil {
 		log.Println("cleanupOldFiles ReadDir error:", err)
 		return
 	}
 
-	prefix := h.cfg.AppName + "-"
 	suffix := ".log"
 
 	type fi struct {

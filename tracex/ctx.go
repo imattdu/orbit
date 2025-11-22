@@ -6,8 +6,6 @@ import (
 	"github.com/imattdu/orbit/cctx"
 )
 
-type spanKeyType struct{}
-
 var spanKey = "span"
 
 // SpanFromContext 取当前 ctx 中的 span
@@ -15,7 +13,6 @@ func SpanFromContext(ctx context.Context) *Span {
 	if ctx == nil {
 		return nil
 	}
-	//v := ctx.Value(spanKey)
 	span, _ := cctx.GetAs[*Span](ctx, spanKey)
 	return span
 }
@@ -41,6 +38,5 @@ func WithSpan(ctx context.Context, s *Span) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	//return context.WithValue(ctx, spanKey, s)
 	return cctx.With(ctx, spanKey, s)
 }

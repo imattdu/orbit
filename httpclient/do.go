@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/imattdu/orbit/errorx"
+	"github.com/imattdu/orbit/tracex"
 	"io"
 	"net/http"
 	"time"
@@ -16,6 +18,41 @@ import (
 //   - *[]byte   ：填充原始字节
 //   - 其他      ：按 JSON 进行 Unmarshal
 func (c *Client) Do(ctx context.Context, reqCfg *Request, respBody any) (*http.Response, error) {
+	// ---------- 初始化统计 ----------
+	stats := &CallStats{
+		ctx:    ctx,
+		Method: reqCfg.Method,
+		Query:  reqCfg.Query.Encode(),
+	}
+	defer func() {
+		logMap := map[string]interface{}{
+			"method":       stats.Method,
+			"url":          stats.URL,
+			"path":         stats.Path,
+			"query":        stats.Query,
+			"body":         stats.Body,
+			"body_size":    stats.BodySize,
+			"attempts":     stats.Attempts,
+			"max_attempts": stats.MaxAttempts,
+			"response":     stats.Response,
+		}
+		ctx := stats.ctx
+		if stats.Attempts >= 1 {
+			v := stats.AttemptsLog[stats.Attempts-1]
+			ctx = v.ctx
+			logMap["cost"] = v.Cost / time.Millisecond
+		}
+		if stats.Err != nil {
+			logMap["err"] = stats.Err.Error()
+		}
+
+		if errorx.IsSuccess(stats.Err) {
+			c.logger.Info(ctx, "_com_http_success", logMap)
+		} else {
+			c.logger.Warn(ctx, "_com_http_failure", logMap)
+		}
+	}()
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -25,23 +62,20 @@ func (c *Client) Do(ctx context.Context, reqCfg *Request, respBody any) (*http.R
 	if timeout <= 0 {
 		timeout = c.defaultTimeout
 	}
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
 
 	// ---------- URL ----------
 	u, err := c.buildURL(reqCfg.Path, reqCfg.Query)
 	if err != nil {
 		return nil, err
 	}
+	stats.URL = u
 
 	// ---------- Body 预处理（为了支持重试） ----------
-	var bodyBytes []byte
-	var bodyReader io.Reader
-	var bodyIsReader bool
-
+	var (
+		bodyBytes    []byte
+		bodyReader   io.Reader
+		bodyIsReader bool
+	)
 	headers := cloneHeader(reqCfg.Headers)
 
 	switch v := reqCfg.Body.(type) {
@@ -52,6 +86,7 @@ func (c *Client) Do(ctx context.Context, reqCfg *Request, respBody any) (*http.R
 	default:
 		buf := &bytes.Buffer{}
 		if err := json.NewEncoder(buf).Encode(v); err != nil {
+			stats.Err = err
 			return nil, err
 		}
 		bodyBytes = cloneBytes(buf.Bytes())
@@ -73,13 +108,6 @@ func (c *Client) Do(ctx context.Context, reqCfg *Request, respBody any) (*http.R
 		attempts = 1
 	}
 
-	// ---------- 初始化统计 ----------
-	stats := &CallStats{
-		Method:      reqCfg.Method,
-		URL:         u,
-		Query:       reqCfg.Query.Encode(),
-		MaxAttempts: attempts,
-	}
 	if bodyBytes != nil {
 		stats.BodySize = len(bodyBytes)
 		if len(bodyBytes) <= 1024 {
@@ -89,96 +117,100 @@ func (c *Client) Do(ctx context.Context, reqCfg *Request, respBody any) (*http.R
 
 	var lastResp *http.Response
 	var lastErr error
+	var isBreak bool
 	begin := time.Now()
-
+	stats.MaxAttempts = attempts
 	// ---------- 重试主循环 ----------
 	for attempt := 0; attempt < attempts; attempt++ {
-		// 每次重试重建 body reader
-		if bodyBytes != nil {
-			bodyReader = bytes.NewReader(bodyBytes)
+		aAttempt := CallAttempt{
+			Attempt: attempt + 1,
 		}
+		lastResp, isBreak, lastErr = func() (aResp *http.Response, isBreak bool, aErr error) {
+			ctx, _ := tracex.StartSpan(ctx, "http")
+			defer func() {
+				tracex.EndSpan(ctx, nil)
+				aAttempt.ctx = ctx
+			}()
+			ctx, timeoutCancel := context.WithTimeout(ctx, timeout)
+			defer timeoutCancel()
 
-		httpReq, err := http.NewRequestWithContext(ctx, reqCfg.Method, u, bodyReader)
-		if err != nil {
-			return nil, err
-		}
-		for k, vs := range headers {
-			for _, v := range vs {
-				httpReq.Header.Add(k, v)
+			// 每次重试重建 body reader
+			if bodyBytes != nil {
+				bodyReader = bytes.NewReader(bodyBytes)
 			}
-		}
+			httpReq, err := http.NewRequestWithContext(ctx, reqCfg.Method, u, bodyReader)
+			if err != nil {
+				return nil, true, err
+			}
+			for k, vs := range headers {
+				for _, v := range vs {
+					httpReq.Header.Add(k, v)
+				}
+			}
 
-		if stats.Path == "" && httpReq.URL != nil {
-			stats.Path = httpReq.URL.Path
-		}
+			if stats.Path == "" && httpReq.URL != nil {
+				stats.Path = httpReq.URL.Path
+			}
+			if stats.Query == "" && httpReq.URL != nil {
+				stats.Query = httpReq.URL.RawQuery
+			}
 
-		// before hook
-		for _, h := range c.before {
-			h(ctx, httpReq)
-		}
+			// before hook
+			for _, h := range c.before {
+				h(ctx, httpReq)
+			}
 
-		attemptStart := time.Now()
-		resp, err := c.hc.Do(httpReq)
-		elapsed := time.Since(attemptStart)
+			attemptStart := time.Now()
+			resp, err := c.hc.Do(httpReq)
+			aAttempt.Cost = time.Since(attemptStart)
 
-		// after hook
-		for _, h := range c.after {
-			h(ctx, httpReq, resp, err)
-		}
+			// after hook
+			for _, h := range c.after {
+				h(ctx, httpReq, resp, err)
+			}
 
-		lastResp, lastErr = resp, err
+			if resp != nil {
+				aAttempt.Status = resp.StatusCode
+				if err == nil && resp.StatusCode != 200 {
+					err = errorx.New(errorx.CodeEntry{
+						Code:    resp.StatusCode,
+						Message: resp.Status,
+					})
+				}
+			}
+			// 是否需要重试
+			aAttempt.WillRetry = attempt < attempts-1 && c.retryDecider(resp, err)
+			if !aAttempt.WillRetry {
+				return resp, true, err
+			}
 
-		statusCode := 0
-		if resp != nil {
-			statusCode = resp.StatusCode
-		}
+			// 丢弃剩余 body，方便复用连接
+			if resp != nil && resp.Body != nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
 
-		// 是否需要重试
-		willRetry := attempt < attempts-1 && c.retryDecider(resp, err)
-
-		// 记录单次尝试
-		stats.AttemptsLog = append(stats.AttemptsLog, CallAttempt{
-			Attempt:   attempt + 1,
-			Status:    statusCode,
-			Err:       errString(err),
-			Cost:      elapsed,
-			WillRetry: willRetry,
-		})
-
-		if !willRetry {
+			// 退避等待，支持 ctx 取消
+			sleep := c.backoff(attempt)
+			if sleep > 0 {
+				select {
+				case <-time.After(sleep):
+				case <-ctx.Done():
+					return nil, true, ctx.Err()
+				}
+			}
+			return nil, false, err
+		}()
+		stats.AttemptsLog = append(stats.AttemptsLog, aAttempt)
+		if isBreak {
 			break
-		}
-
-		// 丢弃剩余 body，方便复用连接
-		if resp != nil && resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}
-
-		// 退避等待，支持 ctx 取消
-		sleep := c.backoff(attempt)
-		if sleep > 0 {
-			select {
-			case <-time.After(sleep):
-			case <-ctx.Done():
-				lastErr = ctx.Err()
-				break
-			}
 		}
 	}
 
 	// ---------- 填充最终统计 ----------
 	stats.Cost = time.Since(begin)
 	stats.Attempts = len(stats.AttemptsLog)
-	if lastResp != nil {
-		stats.Status = lastResp.StatusCode
-	}
-	stats.Err = errString(lastErr)
-
-	// 交给调用方打日志 / 上报
-	if c.statsHook != nil {
-		c.statsHook(ctx, stats)
-	}
+	stats.Err = lastErr
 
 	// ---------- 整理返回 ----------
 	if lastErr != nil && lastResp == nil {
@@ -193,38 +225,43 @@ func (c *Client) Do(ctx context.Context, reqCfg *Request, respBody any) (*http.R
 	if respBody == nil {
 		return resp, nil
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	// io.Writer：流式复制
 	if w, ok := respBody.(io.Writer); ok {
 		_, err := io.Copy(w, resp.Body)
+		stats.Err = err
 		return resp, err
 	}
-
 	// 读完
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
+		stats.Err = err
 		return resp, err
 	}
 
 	// 业务错误解析
 	if c.bizErrDecoder != nil {
-		if berr := c.bizErrDecoder(resp.StatusCode, data); berr != nil {
-			return resp, berr
+		if bErr := c.bizErrDecoder(resp.StatusCode, data); bErr != nil {
+			stats.Err = bErr
+			return resp, bErr
 		}
 	}
 
 	// *[]byte：原始字节
 	if p, ok := respBody.(*[]byte); ok {
 		*p = data
+		stats.Response = string(data)
 		return resp, nil
 	}
-
 	// 默认 JSON
 	if err := json.Unmarshal(data, respBody); err != nil {
+		stats.Err = err
 		return resp, err
 	}
-
+	stats.Response = respBody
 	return resp, nil
 }
 

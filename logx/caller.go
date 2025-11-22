@@ -18,8 +18,7 @@ type caller struct {
 // -------------------- 调用方信息 --------------------
 
 func getCaller() caller {
-	// skip=0:getCaller, 1:encodeLog/log, 2:对外 Info/Debug/Error 调用者
-	pc, file, line, ok := runtime.Caller(2)
+	pc, file, line, ok := runtime.Caller(4)
 	file = trimFilePath(file)
 	funcName := "unknown"
 	if ok {
@@ -49,7 +48,6 @@ func getModRoot(fullPath string) string {
 	return modRoot
 }
 
-// 把 /Users/xxx/project/orbit/logx/logger.go -> orbit/logx/logger.go
 func trimFilePath(fullPath string) string {
 	if fullPath == "" {
 		return ""
@@ -78,8 +76,6 @@ func findGoModRoot(start string) (string, error) {
 	return "", fmt.Errorf("go.mod not found")
 }
 
-// github.com/imattdu/orbit/logx.Info -> Info
-// github.com/imattdu/orbit/service.(*Server).Serve -> (*Server).Serve
 func trimFuncName(name string) string {
 	if idx := strings.LastIndex(name, "/"); idx >= 0 {
 		name = name[idx+1:]

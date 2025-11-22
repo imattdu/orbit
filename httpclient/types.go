@@ -10,13 +10,15 @@ import (
 type CallAttempt struct {
 	Attempt   int           `json:"attempt"`
 	Status    int           `json:"status"`
-	Err       string        `json:"err,omitempty"`
+	Err       error         `json:"err,omitempty"`
 	Cost      time.Duration `json:"cost"`
 	WillRetry bool          `json:"will_retry"`
+	ctx       context.Context
 }
 
 // CallStats 一次完整调用信息
 type CallStats struct {
+	ctx context.Context
 	// 请求级
 	Method string `json:"method"`
 	URL    string `json:"url"`
@@ -34,8 +36,10 @@ type CallStats struct {
 
 	// 最终结果
 	Status int           `json:"status"`
-	Err    string        `json:"err,omitempty"`
+	Err    error         `json:"err,omitempty"`
 	Cost   time.Duration `json:"cost"`
+
+	Response interface{} `json:"response"`
 }
 
 // BizErrorDecoder 业务错误解析函数

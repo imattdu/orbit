@@ -9,7 +9,7 @@ import (
 type Error struct {
 	Code    CodeEntry      `json:"code"`    // 业务错误码
 	Type    CodeEntry      `json:"type"`    // 错误类型：ErrTypeSys / ErrTypeBiz
-	Success bool           `json:"success"` // 错误类型：ErrTypeSys / ErrTypeBiz
+	Success bool           `json:"success"` // 成功、失败
 	Service CodeEntry      `json:"service"` // 出错模块：mysql / redis / service-X
 	Message string         `json:"message"` // 用于覆盖 CodeEntry.Message
 	Cause   error          `json:"-"`

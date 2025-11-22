@@ -18,7 +18,7 @@ type Config struct {
 	ConsoleEnabled bool // 是否输出到控制台
 	ConsoleColored bool // 控制台是否彩色输出
 
-	Rotate RotateMode // 滚动模式
+	Rotate *RotateMode // 滚动模式
 
 	// RotateSize 模式用：超过 size 就切新文件
 	MaxFileSizeMB int
