@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/imattdu/orbit/errorx"
-	"github.com/imattdu/orbit/tracex"
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/imattdu/orbit/errorx"
+	"github.com/imattdu/orbit/logx"
+	"github.com/imattdu/orbit/tracex"
 )
 
 // Do 发起请求：带重试、统计、业务错误解析
@@ -26,30 +28,30 @@ func (c *Client) Do(ctx context.Context, reqCfg *Request, respBody any) (*http.R
 	}
 	defer func() {
 		logMap := map[string]interface{}{
-			"method":       stats.Method,
-			"url":          stats.URL,
-			"path":         stats.Path,
-			"query":        stats.Query,
-			"body":         stats.Body,
-			"body_size":    stats.BodySize,
-			"attempts":     stats.Attempts,
-			"max_attempts": stats.MaxAttempts,
-			"response":     stats.Response,
+			logx.Method:      stats.Method,
+			logx.URL:         stats.URL,
+			logx.Path:        stats.Path,
+			logx.Query:       stats.Query,
+			logx.Body:        stats.Body,
+			"body_size":      stats.BodySize,
+			logx.Attempts:    stats.Attempts,
+			logx.MaxAttempts: stats.MaxAttempts,
+			logx.Response:    stats.Response,
 		}
 		ctx := stats.ctx
 		if stats.Attempts >= 1 {
 			v := stats.AttemptsLog[stats.Attempts-1]
 			ctx = v.ctx
-			logMap["cost"] = v.Cost / time.Millisecond
+			logMap[logx.Cost] = v.Cost / time.Millisecond
 		}
 		if stats.Err != nil {
 			logMap["err"] = stats.Err.Error()
 		}
 
 		if errorx.IsSuccess(stats.Err) {
-			c.logger.Info(ctx, "_com_http_success", logMap)
+			c.logger.Info(ctx, logx.TagHttpFailure, logMap)
 		} else {
-			c.logger.Warn(ctx, "_com_http_failure", logMap)
+			c.logger.Warn(ctx, logx.TagHttpSuccess, logMap)
 		}
 	}()
 

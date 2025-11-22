@@ -1,9 +1,11 @@
 package logx
 
 const (
-	TagUndef      = "undef"
-	TagRequestIn  = "request_in"
-	TagRequestOut = "request_out"
+	TagUndef       = "undef"
+	TagRequestIn   = "request_in"
+	TagRequestOut  = "request_out"
+	TagHttpSuccess = "http_success"
+	TagHttpFailure = "http_failure"
 
 	Cost = "cost"
 	Msg  = "msg"
