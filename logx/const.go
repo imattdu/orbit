@@ -1,11 +1,17 @@
 package logx
 
 const (
-	TagUndef       = "undef"
-	TagRequestIn   = "request_in"
-	TagRequestOut  = "request_out"
-	TagHttpSuccess = "http_success"
-	TagHttpFailure = "http_failure"
+	TagUndef        = "undef"
+	TagRequestIn    = "request_in"
+	TagRequestOut   = "request_out"
+	TagHttpSuccess  = "http_success"
+	TagHttpFailure  = "http_failure"
+	TagMysqlSuccess = "mysql_success"
+	TagMysqlFailure = "mysql_failure"
+	TagRedisSuccess = "redis_success"
+	TagRedisFailure = "redis_failure"
+	TagKafkaSuccess = "kafka_success"
+	TagKafkaFailure = "kafka_failure"
 
 	Cost = "cost"
 	Msg  = "msg"

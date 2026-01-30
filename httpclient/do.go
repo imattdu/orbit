@@ -45,7 +45,7 @@ func (c *Client) Do(ctx context.Context, reqCfg *Request, respBody any) (*http.R
 			logMap[logx.Cost] = v.Cost / time.Millisecond
 		}
 		if stats.Err != nil {
-			logMap["err"] = stats.Err.Error()
+			logMap[logx.Err] = stats.Err.Error()
 		}
 
 		if errorx.IsSuccess(stats.Err) {
